@@ -36,6 +36,7 @@ let rightSmall = [];
 let leftBig = [];
 let rightBig = [];
 let centerBig = [];
+let ellipseYScale = 1;
 
 function preload() {
   // comment this out if you don't have the file
@@ -61,6 +62,7 @@ function setup() {
   const grayPanelH = height - 2 * L.pad;
   const smallStepX = L.grayW / smallCols;
   const smallStepY = grayPanelH / smallRows;
+  ellipseYScale = smallStepY / smallStepX || 1;
 
   leftSmall = makeGridEllipses({
     x0: leftGrayX,
@@ -83,22 +85,24 @@ function setup() {
   // ----- BIG circles: fill the red stripes (2 cols x 5 rows) -----
   // Each red stripe is 464px wide; with 2 columns, each circle diameter is 232 (r=116).
   const bigCols = 2;
-  const bigRows = 5;
+  const bigRows = 4;
   const bigDStripe = L.redW / bigCols; // 232
-  const bigRStripe = bigDStripe / 2;  // 116
+  const bigRx = bigDStripe / 2;              // 116 (width 232)
+  const bigRy = bigRx * ellipseYScale;       // 127 (height 254)
   const bigStepX = bigDStripe;
-  const bigStepY = bigDStripe;
-  const bigY0 = (height - bigRows * bigStepY) / 2; // centers vertically (may be slightly negative)
+  const bigStepY = bigRy * 2; // touch vertically (no gaps / no overlap)
+  const bigY0 = (height - bigRows * bigStepY) / 2; // equal margin top/bottom
 
-  leftBig = makeGridCircles({
+  leftBig = makeGridEllipses({
     x0: leftRedX,
     y0: bigY0,
     cols: bigCols,
     rows: bigRows,
     stepX: bigStepX,
     stepY: bigStepY,
-    r: bigRStripe,
-    invertChecker: false,
+    rx: bigRx,
+    ry: bigRy,
+    invertChecker: true, // intercalated gradient directions
     idxStart: leftSmall.length,
   });
 
@@ -111,9 +115,10 @@ function setup() {
   // Center column width is: grayW + redW + redW + grayW = 232+464+464+232 = 1392
   // But easiest: just use canvas center x.
   const cx = width / 2;
+  const centerRy = 507 / 2; // 464w x 507h
   centerBig = [
-    { x: cx, y: 232, r: L.bigR, invert: false, idx: rightBig[rightBig.length - 1].idx + 1, scheme: "yellow" },
-    { x: cx, y: height - 232, r: L.bigR, invert: true, idx: rightBig[rightBig.length - 1].idx + 2, scheme: "yellow" },
+    { x: cx, y: centerRy, r: L.bigR, ry: centerRy, invert: false, idx: rightBig[rightBig.length - 1].idx + 1, scheme: "yellow" },
+    { x: cx, y: height - centerRy, r: L.bigR, ry: centerRy, invert: true, idx: rightBig[rightBig.length - 1].idx + 2, scheme: "yellow" },
   ];
 }
 
@@ -161,20 +166,20 @@ function draw() {
 function drawBackground() {
   noStroke();
 
-  // left gray panel
-  fill(...P.gray);
+  // left outer stripe (swap colors with inner stripe)
+  fill(...P.red);
   rect(L.pad, L.pad, L.grayW, height - 2 * L.pad);
 
-  // left red stripe
-  fill(...P.red);
+  // left inner stripe (swap colors with outer stripe)
+  fill(...P.gray);
   rect(L.pad + L.grayW, 0, L.redW, height);
 
-  // right gray panel
-  fill(...P.gray);
+  // right outer stripe (swap colors with inner stripe)
+  fill(...P.red);
   rect(width - L.pad - L.grayW, L.pad, L.grayW, height - 2 * L.pad);
 
-  // right red stripe
-  fill(...P.red);
+  // right inner stripe (swap colors with outer stripe)
+  fill(...P.gray);
   rect(width - L.pad - L.grayW - L.redW, 0, L.redW, height);
 }
 
@@ -211,16 +216,18 @@ function drawBigStripeGroup(circles, env, spread, freq, amp) {
     const yOff = springy(timeSec, freq, phase) * amp;
     const drift = springy(timeSec, freq * 0.7, phase + 0.8) * (amp * 0.4);
 
-    // subtle gradient across big circles (red -> slightly darker red-ish / gray-ish)
-    // You can switch to solid by replacing with fill+circle.
-    gradCircle({
+    // Inner stripe circles: gradient from stripe bg (gray) to other stripe bg (red/orange).
+    const rx = typeof c.rx === "number" ? c.rx : c.r;
+    const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
+    gradEllipse({
       x: c.x,
       y: c.y + yOff,
-      r: c.r,
-      cA: P.red,
-      cB: [220, 80, 70], // slightly deeper red (still in palette range)
+      rx,
+      ry,
+      cA: P.gray,
+      cB: P.red,
       vertical: true,
-      invert: false,
+      invert: !!c.invert,
       drift,
     });
   }
@@ -232,14 +239,17 @@ function drawCenterGroup(circles, env, spread, freq, amp) {
     const yOff = springy(timeSec, freq, phase) * amp;
     const drift = springy(timeSec, freq * 0.6, phase + 1.1) * (amp * 0.5);
 
-    gradCircle({
+    const rx = c.r;
+    const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
+    gradEllipse({
       x: c.x,
       y: c.y + yOff,
-      r: c.r,
+      rx,
+      ry,
       cA: P.yellow,
       cB: P.gray,
       vertical: true,
-      invert: c.invert,
+      invert: !c.invert,
       drift,
     });
   }
