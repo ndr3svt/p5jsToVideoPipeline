@@ -28,6 +28,13 @@ const L = {
   bigR: 232,     // for the two huge center circles
 };
 
+// Center big circles: set start/end Y positions here (pixels).
+// Leave as `null` to use the computed defaults.
+const CENTER_POS = {
+  top: { y0: 350, y1: 280 },
+  bottom: { y0: 730, y1: 800 },
+};
+
 let timeSec = 0;
 
 // Circle groups
@@ -119,9 +126,14 @@ function setup() {
   // But easiest: just use canvas center x.
   const cx = width / 2;
   const centerRy = 507 / 2; // 464w x 507h
+  const cy = height / 2;
+  const centerTopY0 = CENTER_POS.top.y0 ?? (cy - centerRy);
+  const centerTopY1 = CENTER_POS.top.y1 ?? cy;
+  const centerBotY0 = CENTER_POS.bottom.y0 ?? (cy + centerRy);
+  const centerBotY1 = CENTER_POS.bottom.y1 ?? cy;
   centerBig = [
-    { x: cx, y: centerRy, r: L.bigR, ry: centerRy, invert: false, idx: rightBig[rightBig.length - 1].idx + 1, scheme: "yellow" },
-    { x: cx, y: height - centerRy, r: L.bigR, ry: centerRy, invert: true, idx: rightBig[rightBig.length - 1].idx + 2, scheme: "yellow" },
+    { x: cx, y: centerTopY0, y0: centerTopY0, y1: centerTopY1, r: L.bigR, ry: centerRy, invert: false, idx: rightBig[rightBig.length - 1].idx + 1, scheme: "yellow" },
+    { x: cx, y: centerBotY0, y0: centerBotY0, y1: centerBotY1, r: L.bigR, ry: centerRy, invert: true, idx: rightBig[rightBig.length - 1].idx + 2, scheme: "yellow" },
   ];
 }
 
@@ -136,15 +148,22 @@ function draw() {
 
   drawBackground();
 
-  // Gradient rotation (180°) in accelerating chains per sector
-  drawGradientCircleGroup(leftSmall, timeSec, { period: 6.5, chain: 0.55, accel: 0.62 }, stripeOuterColor, stripeInnerColor);
-  drawGradientCircleGroup(rightSmall, timeSec, { period: 6.5, chain: 0.55, accel: 0.62 }, stripeOuterColor, stripeInnerColor);
+  // Step animation timing (shared "beat" for everything below)
+  const step = stepSpring(timeSec, 3.0, 0.58, 1.12);
+  const leftAngle = HALF_PI + HALF_PI * step.total;  // +90° per step (clockwise in screen coords)
+  const rightAngle = HALF_PI - HALF_PI * step.total; // -90° per step (counter-clockwise)
 
-  drawBigStripeGroup(leftBig, timeSec, { period: 7.2, chain: 0.58, accel: 0.60 }, stripeInnerColor, stripeOuterColor);
-  drawBigStripeGroup(rightBig, timeSec, { period: 7.2, chain: 0.58, accel: 0.60 }, stripeInnerColor, stripeOuterColor);
+  // Circles keep fixed gradients (no stripe-color crossfade)
+  drawGradientCircleGroup(leftSmall, leftAngle, P.red, P.gray);
+  drawGradientCircleGroup(rightSmall, rightAngle, P.red, P.gray);
 
-  drawCenterGroup(centerBig, timeSec, { period: 8.4, chain: 0.45, accel: 0.70 });
+  drawBigStripeGroup(leftBig, leftAngle, P.gray, P.red);
+  drawBigStripeGroup(rightBig, rightAngle, P.gray, P.red);
 
+  // Center circles: gradients static, centers "gravitate" in/out on each step
+  
+  drawCenterGroup(centerBig, step);
+  
   // Text overlay
   if (img) image(img, 742, 480);
 }
@@ -175,15 +194,12 @@ function drawBackground() {
 // ----------------------------
 // Group draw helpers
 // ----------------------------
-function drawGradientCircleGroup(circles, time, anim, cA, cB) {
-  for (let i = 0; i < circles.length; i++) {
-    const c = circles[i];
+function drawGradientCircleGroup(circles, angle, cA, cB) {
+  for (const c of circles) {
     const isEllipse = typeof c.rx === "number" && typeof c.ry === "number";
     const rx = isEllipse ? c.rx : c.r;
     const ry = isEllipse ? c.ry : c.r;
 
-    const angle = chainRotateAngle(time, anim, i, circles.length, HALF_PI);
-
     gradEllipse({
       x: c.x,
       y: c.y,
@@ -197,12 +213,10 @@ function drawGradientCircleGroup(circles, time, anim, cA, cB) {
   }
 }
 
-function drawBigStripeGroup(circles, time, anim, cA, cB) {
-  for (let i = 0; i < circles.length; i++) {
-    const c = circles[i];
+function drawBigStripeGroup(circles, angle, cA, cB) {
+  for (const c of circles) {
     const rx = typeof c.rx === "number" ? c.rx : c.r;
     const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
-    const angle = chainRotateAngle(time, anim, i, circles.length, HALF_PI);
 
     gradEllipse({
       x: c.x,
@@ -217,21 +231,24 @@ function drawBigStripeGroup(circles, time, anim, cA, cB) {
   }
 }
 
-function drawCenterGroup(circles, time, anim) {
-  for (let i = 0; i < circles.length; i++) {
-    const c = circles[i];
+function drawCenterGroup(circles, step) {
+  const p = step.step % 2 === 0 ? step.p : 1 - step.p; // in -> hold -> out -> hold ...
+
+  for (const c of circles) {
     const rx = c.r;
     const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
-    const angle = chainRotateAngle(time, anim, i, circles.length, HALF_PI);
+    const y0 = typeof c.y0 === "number" ? c.y0 : c.y;
+    const y1 = typeof c.y1 === "number" ? c.y1 : y0;
+    const y = lerp(y0, y1, p);
 
     gradEllipse({
       x: c.x,
-      y: c.y,
+      y,
       rx,
       ry,
       cA: P.yellow,
       cB: P.gray,
-      angle,
+      angle: HALF_PI,
       invert: !c.invert,
     });
   }
@@ -314,14 +331,14 @@ function gradEllipse({ x, y, rx, ry, cA, cB, angle = HALF_PI, invert = false }) 
   const dx = cos(angle);
   const dy = sin(angle);
   const x0 = x - dx * d;
-  const y0 = y - dy * d;
+  const y0 = y - dy * d*0.7;
   const x1 = x + dx * d;
-  const y1 = y + dy * d;
+  const y1 = y + dy * d*0.7;
 
   const g = ctx.createLinearGradient(x0, y0, x1, y1);
 
-  const a = `rgb(${cA[0]},${cA[1]},${cA[2]})`;
-  const b = `rgb(${cB[0]},${cB[1]},${cB[2]})`;
+  const a = cssColor(cA);
+  const b = cssColor(cB);
 
   if (!invert) {
     g.addColorStop(0, a);
@@ -340,6 +357,25 @@ function gradEllipse({ x, y, rx, ry, cA, cB, angle = HALF_PI, invert = false }) 
 // ----------------------------
 // Animation helpers
 // ----------------------------
+function cssColor(c) {
+  if (Array.isArray(c)) {
+    const r = c[0] ?? 0;
+    const g = c[1] ?? 0;
+    const b = c[2] ?? 0;
+    const a = c[3];
+    if (typeof a === "number") {
+      const alpha = a <= 1 ? a : a / 255;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+    return `rgb(${r},${g},${b})`;
+  }
+  if (typeof c === "string") return c;
+  if (c && typeof c === "object" && Array.isArray(c.levels)) {
+    return cssColor(c.levels);
+  }
+  return "rgba(0,0,0,0)";
+}
+
 function clamp01(x) {
   return max(0, min(1, x));
 }
@@ -365,22 +401,15 @@ function easeOutBack(t, s = 1.15) {
   return 1 + (s + 1) * u * u * u + s * u * u;
 }
 
-// Returns gradient angle that rotates 180° (π) with a springy, accelerating chain.
-function chainRotateAngle(time, anim, index, total, baseAngle = HALF_PI) {
-  const period = anim.period ?? 7.0;
-  const chain = anim.chain ?? 0.55; // 0..1 portion reserved for stagger
-  const accel = anim.accel ?? 0.62; // <1 => accelerating spacing
+function stepSpring(time, periodSec, moveFrac = 0.58, back = 1.12) {
+  const step = floor(time / periodSec);
+  const t = (time / periodSec) % 1;
 
-  const cyc = (time / period) % 1;
-  const forward = cyc < 0.5;
-  const u = forward ? cyc * 2 : (1 - cyc) * 2; // 0..1 each half-cycle
-  const dir = forward ? 1 : -1;
+  if (t >= moveFrac) {
+    return { step, p: 1, total: step + 1 };
+  }
 
-  const n = max(1, total);
-  const order = n === 1 ? 0 : index / (n - 1);
-  const delay = pow(order, accel) * chain;
-  const local = clamp01((u - delay) / max(1e-6, 1 - chain));
-  const p = easeOutBack(local, 1.12);
-
-  return baseAngle + dir * PI * p;
+  const u = t / max(1e-6, moveFrac);
+  const p = easeOutBack(u, back);
+  return { step, p, total: step + p };
 }
