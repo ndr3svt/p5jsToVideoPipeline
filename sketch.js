@@ -25,8 +25,6 @@ const L = {
   pad: 32,
   grayW: 232,
   redW: 464,
-  smallStep: 116,
-  smallR: 58,
   bigR: 232,     // for the two huge center circles
 };
 
@@ -55,16 +53,24 @@ function setup() {
   const rightGrayX = width - L.pad - L.grayW;
   const rightRedX = width - L.pad - L.grayW - L.redW;
 
-  // ----- SMALL circles: fill the gray panels (2 cols x 9 rows) -----
-  // y0=pad so the top starts inside the panel; step=116; r=58
-  leftSmall = makeGridCircles({
+  // ----- SMALL circles: fill the gray panels (2 cols x 8 rows) -----
+  // Design note: these are intentionally a bit taller than wide (ellipse),
+  // so their height matches the panel height / rows.
+  const smallCols = 2;
+  const smallRows = 8;
+  const grayPanelH = height - 2 * L.pad;
+  const smallStepX = L.grayW / smallCols;
+  const smallStepY = grayPanelH / smallRows;
+
+  leftSmall = makeGridEllipses({
     x0: leftGrayX,
     y0: L.pad,
-    cols: 2,
-    rows: 8,
-    stepX: L.smallStep,
-    stepY: L.smallStep,
-    r: L.smallR,
+    cols: smallCols,
+    rows: smallRows,
+    stepX: smallStepX,
+    stepY: smallStepY,
+    rx: smallStepX / 2,
+    ry: smallStepY / 2,
     invertChecker: true,
     idxStart: 0,
   });
@@ -74,20 +80,21 @@ function setup() {
     invert: !c.invert, // inverted checker pattern on the right
   }));
 
-  // ----- BIG circles: fill the red stripes (2 cols x 5 rows), radius 232 (diameter 464) -----
-  // This makes 2 columns that exactly match 464 width (touching).
-  // 5 rows fits 1080 height with overflow — we center them vertically by shifting y0.
-  const bigRStripe = 232;
-  const bigStepX = bigRStripe * 2; // 464
-  const bigStepY = bigRStripe * 2; // 464
+  // ----- BIG circles: fill the red stripes (2 cols x 5 rows) -----
+  // Each red stripe is 464px wide; with 2 columns, each circle diameter is 232 (r=116).
+  const bigCols = 2;
+  const bigRows = 5;
+  const bigDStripe = L.redW / bigCols; // 232
+  const bigRStripe = bigDStripe / 2;  // 116
+  const bigStepX = bigDStripe;
+  const bigStepY = bigDStripe;
+  const bigY0 = (height - bigRows * bigStepY) / 2; // centers vertically (may be slightly negative)
 
-  // Put 3 rows instead of 5 for a cleaner fit (top/middle/bottom).
-  // If you REALLY want 5 rows, set rows: 5 and y0: -something.
   leftBig = makeGridCircles({
     x0: leftRedX,
-    y0: 0,
-    cols: 2,
-    rows: 3,
+    y0: bigY0,
+    cols: bigCols,
+    rows: bigRows,
     stepX: bigStepX,
     stepY: bigStepY,
     r: bigRStripe,
@@ -181,10 +188,13 @@ function drawGradientCircleGroup(circles, env, spread, freq, amp, scheme) {
     const drift = springy(timeSec, freq * 0.8, phase + 1.3) * (amp * 0.6);
 
     if (scheme === "redGray") {
-      gradCircle({
+      const isEllipse = typeof c.rx === "number" && typeof c.ry === "number";
+      const draw = isEllipse ? gradEllipse : gradCircle;
+
+      draw({
         x: c.x,
         y: c.y + yOff,
-        r: c.r,
+        ...(isEllipse ? { rx: c.rx, ry: c.ry } : { r: c.r }),
         cA: P.red,
         cB: P.gray,
         vertical: true,
@@ -263,6 +273,32 @@ function makeGridCircles({
   return out;
 }
 
+function makeGridEllipses({
+  x0, y0,
+  cols, rows,
+  stepX, stepY,
+  rx, ry,
+  invertChecker = true,
+  idxStart = 0,
+}) {
+  const out = [];
+  let idx = idxStart;
+
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      out.push({
+        x: x0 + i * stepX + rx,
+        y: y0 + j * stepY + ry,
+        rx,
+        ry,
+        invert: invertChecker ? ((i + j) % 2 === 1) : false,
+        idx: idx++,
+      });
+    }
+  }
+  return out;
+}
+
 function mirrorX(circles) {
   return circles.map(c => ({ ...c, x: width - c.x }));
 }
@@ -299,6 +335,39 @@ function gradCircle({ x, y, r, cA, cB, vertical = true, invert = false, drift = 
 
   ctx.fillStyle = g;
   ctx.fillRect(x - r, y - r, r * 2, r * 2);
+
+  ctx.restore();
+}
+
+function gradEllipse({ x, y, rx, ry, cA, cB, vertical = true, invert = false, drift = 0 }) {
+  const ctx = drawingContext;
+  ctx.save();
+
+  ctx.beginPath();
+  ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  ctx.clip();
+
+  // Gradient anchored to the shape (moves with it)
+  const x0 = vertical ? x : x - rx + drift;
+  const y0 = vertical ? y - ry + drift : y;
+  const x1 = vertical ? x : x + rx + drift;
+  const y1 = vertical ? y + ry + drift : y;
+
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+
+  const a = `rgb(${cA[0]},${cA[1]},${cA[2]})`;
+  const b = `rgb(${cB[0]},${cB[1]},${cB[2]})`;
+
+  if (!invert) {
+    g.addColorStop(0, a);
+    g.addColorStop(1, b);
+  } else {
+    g.addColorStop(0, b);
+    g.addColorStop(1, a);
+  }
+
+  ctx.fillStyle = g;
+  ctx.fillRect(x - rx, y - ry, rx * 2, ry * 2);
 
   ctx.restore();
 }
