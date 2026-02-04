@@ -13,6 +13,25 @@ Notes
 
 let img;
 
+const DEBUG = false;
+
+const EXPORT_DEFAULTS = {
+  enabled: false,
+  fps: 60,
+  durationSec: 14,
+  codec: "hevc10", // "hevc10" | "h264"
+  preset: "slow",
+  crf: 16,
+  cleanup: false,
+};
+
+const EXPORT = {
+  ...EXPORT_DEFAULTS,
+  totalFrames: EXPORT_DEFAULTS.fps * EXPORT_DEFAULTS.durationSec,
+  frame: 0,
+  _afterDraw: null,
+};
+
 const P = {
   gray: [211, 204, 199],
   red: [254, 126, 114],
@@ -28,6 +47,15 @@ const L = {
   bigR: 232,     // for the two huge center circles
 };
 
+// Center big circles: set start/end Y positions here (pixels).
+// Leave as `null` to use the computed defaults.
+const CENTER_POS = {
+  // top: { y0: 350, y1: 280 },
+  // bottom: { y0: 730, y1: 800 },
+   top: { y0: 280, y1: 540 },
+  bottom: { y0: 800, y1: 540 },
+};
+
 let timeSec = 0;
 
 // Circle groups
@@ -38,15 +66,87 @@ let rightBig = [];
 let centerBig = [];
 let ellipseYScale = 1;
 
+let stripeOuterColor = null;
+let stripeInnerColor = null;
+
+let isPaused = false;
+
+function getExportConfig() {
+  const p = new URLSearchParams(window.location.search);
+  const enabled = p.get("export") === "1";
+  const fps = max(1, floor(Number(p.get("fps") ?? EXPORT_DEFAULTS.fps)));
+  const durationSec = max(0, Number(p.get("duration") ?? EXPORT_DEFAULTS.durationSec));
+  const totalFrames = max(0, floor(Number(p.get("frames") ?? fps * durationSec)));
+  const w = max(1, floor(Number(p.get("w") ?? L.w)));
+  const h = max(1, floor(Number(p.get("h") ?? L.h)));
+  const codec = p.get("codec") ?? EXPORT_DEFAULTS.codec;
+  const preset = p.get("preset") ?? EXPORT_DEFAULTS.preset;
+  const crf = max(0, Number(p.get("crf") ?? EXPORT_DEFAULTS.crf));
+  const cleanup = p.get("cleanup") === "1" ? true : EXPORT_DEFAULTS.cleanup;
+  return { enabled, fps, durationSec, totalFrames, w, h, codec, preset, crf, cleanup };
+}
+
+async function exportAllFrames() {
+  for (let f = 0; f < EXPORT.totalFrames; f++) {
+    if (f % 60 === 0) console.log(`export frame ${f}/${EXPORT.totalFrames}`);
+    EXPORT.frame = f;
+    await new Promise(resolve => {
+      EXPORT._afterDraw = resolve;
+      redraw();
+    });
+
+    const canvas = document.querySelector("canvas");
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("canvas.toBlob() returned null");
+    const filename = `frame_${String(f).padStart(6, "0")}.png`;
+
+    const fd = new FormData();
+    fd.append("file", blob, filename);
+    fd.append("index", String(f));
+
+    const res = await fetch("/frame", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(`POST /frame ${f} failed: ${res.status} ${await res.text()}`);
+  }
+
+  const res = await fetch("/encode", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      fps: EXPORT.fps,
+      totalFrames: EXPORT.totalFrames,
+      codec: EXPORT.codec,
+      preset: EXPORT.preset,
+      crf: EXPORT.crf,
+      cleanup: EXPORT.cleanup,
+    }),
+  });
+  if (!res.ok) throw new Error(`POST /encode failed: ${res.status} ${await res.text()}`);
+  console.log(await res.text());
+}
+
 function preload() {
   // comment this out if you don't have the file
   img = loadImage("/text.png");
 }
 
 function setup() {
-  createCanvas(L.w, L.h);
-  pixelDensity(1);
+  const cfg = getExportConfig();
+  EXPORT.enabled = cfg.enabled;
+  EXPORT.fps = cfg.fps;
+  EXPORT.totalFrames = cfg.totalFrames;
+  EXPORT.codec = cfg.codec;
+  EXPORT.preset = cfg.preset;
+  EXPORT.crf = cfg.crf;
+  EXPORT.cleanup = cfg.cleanup;
 
+  createCanvas(cfg.w, cfg.h);
+  pixelDensity(1);
+  frameRate(cfg.fps);
+
+  if (EXPORT.enabled) {
+    noLoop();
+    exportAllFrames().catch(err => console.error(err));
+  }
   // Panel x positions
   const leftGrayX = L.pad;
   const leftRedX = L.pad + L.grayW;
@@ -116,48 +216,69 @@ function setup() {
   // But easiest: just use canvas center x.
   const cx = width / 2;
   const centerRy = 507 / 2; // 464w x 507h
+  const cy = height / 2;
+  const centerTopY0 = CENTER_POS.top.y0 ?? (cy - centerRy);
+  const centerTopY1 = CENTER_POS.top.y1 ?? cy;
+  const centerBotY0 = CENTER_POS.bottom.y0 ?? (cy + centerRy);
+  const centerBotY1 = CENTER_POS.bottom.y1 ?? cy;
   centerBig = [
-    { x: cx, y: centerRy, r: L.bigR, ry: centerRy, invert: false, idx: rightBig[rightBig.length - 1].idx + 1, scheme: "yellow" },
-    { x: cx, y: height - centerRy, r: L.bigR, ry: centerRy, invert: true, idx: rightBig[rightBig.length - 1].idx + 2, scheme: "yellow" },
+    { x: cx, y: centerTopY0, y0: centerTopY0, y1: centerTopY1, r: L.bigR, ry: centerRy, invert: false, idx: rightBig[rightBig.length - 1].idx + 1, scheme: "yellow" },
+    { x: cx, y: centerBotY0, y0: centerBotY0, y1: centerBotY1, r: L.bigR, ry: centerRy, invert: true, idx: rightBig[rightBig.length - 1].idx + 2, scheme: "yellow" },
   ];
 }
 
+function keyPressed() {
+  if (!EXPORT.enabled && (key === "p" || key === "P")) {
+    isPaused = !isPaused;
+    if (isPaused) noLoop();
+    else loop();
+  }
+}
+
+let waitTime = 30;
 function draw() {
   background(...P.yellow);
+  timeSec = EXPORT.enabled ? EXPORT.frame / EXPORT.fps : frameCount / 60;
+
+  // Shared timing
+  // const STEP_PERIOD_SEC = 3.5; // seconds per step
+  const STEP_PERIOD_SEC = 1.75; // seconds per step
+  // Background crossfade (slow, springy loop)
+  const bgT = springPingPong01(timeSec, STEP_PERIOD_SEC * 4, 0.06); // 4 steps per full 0..1..0 loop
+  stripeOuterColor = lerpRGB(P.red, P.gray, bgT);
+  stripeInnerColor = lerpRGB(P.gray, P.red, bgT);
+
   drawBackground();
 
-  timeSec += 1 / 60;
+  // Step animation timing (shared "beat" for everything below)
+  const step = stepSpring(timeSec, STEP_PERIOD_SEC, 0.58, 0);
+  const leftAngle = HALF_PI + HALF_PI * step.total;  // +90° per step (clockwise in screen coords)
+  const rightAngle = HALF_PI - HALF_PI * step.total; // -90° per step (counter-clockwise)
 
-  // Sync -> drift -> sync envelope
-  const cycle = 18.0;          // seconds for full 0→1→0 cycle
-  const env = envelope01(timeSec, cycle);
+  // Circles keep fixed gradients (no stripe-color crossfade)
+  drawGradientCircleGroup(leftSmall, leftAngle, P.red, P.gray);
+  drawGradientCircleGroup(rightSmall, rightAngle, P.red, P.gray);
 
-  // Motion tuning
-  const spreadSmall = 0.38;    // how far phases diverge at peak
-  const spreadBig = 0.10;
-  const spreadCenter = 0.08;
+  drawBigStripeGroup(leftBig, leftAngle, P.gray, P.red);
+  drawBigStripeGroup(rightBig, rightAngle, P.gray, P.red);
 
-  const freqSmall = 0.10;      // gentle float
-  const freqBig = 0.07;
-  const freqCenter = 0.05;
+  // Center circles: gradients static, centers "gravitate" in/out on each step
 
-  const ampSmall = 18;
-  const ampBig = 10;
-  const ampCenter = 22;
-
-  // Draw groups
-  drawGradientCircleGroup(leftSmall, env, spreadSmall, freqSmall, ampSmall, "redGray");
-  drawGradientCircleGroup(rightSmall, env, spreadSmall, freqSmall, ampSmall, "redGray");
-
-  // Big circles in red stripes (subtle gradient or solid)
-  drawBigStripeGroup(leftBig, env, spreadBig, freqBig, ampBig);
-  drawBigStripeGroup(rightBig, env, spreadBig, freqBig, ampBig);
-
-  // Center huge circles (yellow/gray gradients)
-  drawCenterGroup(centerBig, env, spreadCenter, freqCenter, ampCenter);
-
+  drawCenterGroup(centerBig, step);
+  
   // Text overlay
   if (img) image(img, 742, 480);
+
+  if (DEBUG && !EXPORT.enabled) {
+    textSize(24);
+    text("timeSec: " + timeSec.toFixed(2), 10, 20);
+  }
+
+  if (EXPORT.enabled && EXPORT._afterDraw) {
+    const done = EXPORT._afterDraw;
+    EXPORT._afterDraw = null;
+    done();
+  }
 }
 
 // ----------------------------
@@ -167,90 +288,81 @@ function drawBackground() {
   noStroke();
 
   // left outer stripe (swap colors with inner stripe)
-  fill(...P.red);
+  fill(...stripeOuterColor);
   rect(L.pad, L.pad, L.grayW, height - 2 * L.pad);
 
   // left inner stripe (swap colors with outer stripe)
-  fill(...P.gray);
+  fill(...stripeInnerColor);
   rect(L.pad + L.grayW, 0, L.redW, height);
 
   // right outer stripe (swap colors with inner stripe)
-  fill(...P.red);
+  fill(...stripeOuterColor);
   rect(width - L.pad - L.grayW, L.pad, L.grayW, height - 2 * L.pad);
 
   // right inner stripe (swap colors with outer stripe)
-  fill(...P.gray);
+  fill(...stripeInnerColor);
   rect(width - L.pad - L.grayW - L.redW, 0, L.redW, height);
 }
 
 // ----------------------------
 // Group draw helpers
 // ----------------------------
-function drawGradientCircleGroup(circles, env, spread, freq, amp, scheme) {
+function drawGradientCircleGroup(circles, angle, cA, cB) {
   for (const c of circles) {
-    const phase = env * spread * c.idx; // 0 at start/end => all in sync
-    const yOff = springy(timeSec, freq, phase) * amp;
-    const drift = springy(timeSec, freq * 0.8, phase + 1.3) * (amp * 0.6);
+    const isEllipse = typeof c.rx === "number" && typeof c.ry === "number";
+    const rx = isEllipse ? c.rx : c.r;
+    const ry = isEllipse ? c.ry : c.r;
 
-    if (scheme === "redGray") {
-      const isEllipse = typeof c.rx === "number" && typeof c.ry === "number";
-      const draw = isEllipse ? gradEllipse : gradCircle;
-
-      draw({
-        x: c.x,
-        y: c.y + yOff,
-        ...(isEllipse ? { rx: c.rx, ry: c.ry } : { r: c.r }),
-        cA: P.red,
-        cB: P.gray,
-        vertical: true,
-        invert: c.invert,
-        drift,
-      });
-    }
-  }
-}
-
-function drawBigStripeGroup(circles, env, spread, freq, amp) {
-  for (const c of circles) {
-    const phase = env * spread * c.idx;
-    const yOff = springy(timeSec, freq, phase) * amp;
-    const drift = springy(timeSec, freq * 0.7, phase + 0.8) * (amp * 0.4);
-
-    // Inner stripe circles: gradient from stripe bg (gray) to other stripe bg (red/orange).
-    const rx = typeof c.rx === "number" ? c.rx : c.r;
-    const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
     gradEllipse({
       x: c.x,
-      y: c.y + yOff,
+      y: c.y,
       rx,
       ry,
-      cA: P.gray,
-      cB: P.red,
-      vertical: true,
+      cA,
+      cB,
+      angle,
       invert: !!c.invert,
-      drift,
     });
   }
 }
 
-function drawCenterGroup(circles, env, spread, freq, amp) {
+function drawBigStripeGroup(circles, angle, cA, cB) {
   for (const c of circles) {
-    const phase = env * spread * c.idx;
-    const yOff = springy(timeSec, freq, phase) * amp;
-    const drift = springy(timeSec, freq * 0.6, phase + 1.1) * (amp * 0.5);
-
-    const rx = c.r;
+    const rx = typeof c.rx === "number" ? c.rx : c.r;
     const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
+
     gradEllipse({
       x: c.x,
-      y: c.y + yOff,
+      y: c.y,
+      rx,
+      ry,
+      cA,
+      cB,
+      angle,
+      invert: !!c.invert,
+    });
+  }
+}
+
+function drawCenterGroup(circles, step) {
+  const p = step.step % 2 === 0 ? step.p : 1 - step.p; // in -> hold -> out -> hold ...
+
+  for (const c of circles) {
+    const rx = c.r;
+    const ry = typeof c.ry === "number" ? c.ry : rx * ellipseYScale;
+    const y0 = typeof c.y0 === "number" ? c.y0 : c.y;
+    const y1 = typeof c.y1 === "number" ? c.y1 : y0;
+    const y = lerp(y0, y1, p);
+
+    gradEllipse({
+      x: c.x,
+      y,
       rx,
       ry,
       cA: P.yellow,
       cB: P.gray,
-      vertical: true,
+      angle: HALF_PI,
       invert: !c.invert,
-      drift,
     });
   }
 }
@@ -316,40 +428,11 @@ function mirrorX(circles) {
 // ----------------------------
 // Gradient circle (fast, clipped)
 // ----------------------------
-function gradCircle({ x, y, r, cA, cB, vertical = true, invert = false, drift = 0 }) {
-  const ctx = drawingContext;
-  ctx.save();
-
-  ctx.beginPath();
-  ctx.ellipse(x, y, r, r, 0, 0, Math.PI * 2);
-  ctx.clip();
-
-  // Gradient anchored to the shape (moves with it)
-  const x0 = vertical ? x : x - r + drift;
-  const y0 = vertical ? y - r + drift : y;
-  const x1 = vertical ? x : x + r + drift;
-  const y1 = vertical ? y + r + drift : y;
-
-  const g = ctx.createLinearGradient(x0, y0, x1, y1);
-
-  const a = `rgb(${cA[0]},${cA[1]},${cA[2]})`;
-  const b = `rgb(${cB[0]},${cB[1]},${cB[2]})`;
-
-  if (!invert) {
-    g.addColorStop(0, a);
-    g.addColorStop(1, b);
-  } else {
-    g.addColorStop(0, b);
-    g.addColorStop(1, a);
-  }
-
-  ctx.fillStyle = g;
-  ctx.fillRect(x - r, y - r, r * 2, r * 2);
-
-  ctx.restore();
+function gradCircle({ x, y, r, cA, cB, angle = HALF_PI, invert = false }) {
+  gradEllipse({ x, y, rx: r, ry: r, cA, cB, angle, invert });
 }
 
-function gradEllipse({ x, y, rx, ry, cA, cB, vertical = true, invert = false, drift = 0 }) {
+function gradEllipse({ x, y, rx, ry, cA, cB, angle = HALF_PI, invert = false }) {
   const ctx = drawingContext;
   ctx.save();
 
@@ -357,16 +440,18 @@ function gradEllipse({ x, y, rx, ry, cA, cB, vertical = true, invert = false, dr
   ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
   ctx.clip();
 
-  // Gradient anchored to the shape (moves with it)
-  const x0 = vertical ? x : x - rx + drift;
-  const y0 = vertical ? y - ry + drift : y;
-  const x1 = vertical ? x : x + rx + drift;
-  const y1 = vertical ? y + ry + drift : y;
+  const d = Math.max(rx, ry);
+  const dx = cos(angle);
+  const dy = sin(angle);
+  const x0 = x - dx * d;
+  const y0 = y - dy * d*0.7;
+  const x1 = x + dx * d;
+  const y1 = y + dy * d*0.7;
 
   const g = ctx.createLinearGradient(x0, y0, x1, y1);
 
-  const a = `rgb(${cA[0]},${cA[1]},${cA[2]})`;
-  const b = `rgb(${cB[0]},${cB[1]},${cB[2]})`;
+  const a = cssColor(cA);
+  const b = cssColor(cB);
 
   if (!invert) {
     g.addColorStop(0, a);
@@ -377,27 +462,87 @@ function gradEllipse({ x, y, rx, ry, cA, cB, vertical = true, invert = false, dr
   }
 
   ctx.fillStyle = g;
+  // ctx.globalAlpha = mouseX / width;
   ctx.fillRect(x - rx, y - ry, rx * 2, ry * 2);
 
   ctx.restore();
+  // ctx.globalAlpha = 1;
 }
 
 // ----------------------------
-// In-phase -> out-of-phase -> in-phase envelope
+// Animation helpers
 // ----------------------------
-function envelope01(time, cycleSec) {
-  const u = (time / cycleSec) % 1;      // 0..1
-  return 0.5 - 0.5 * cos(TWO_PI * u);   // 0..1..0
+function cssColor(c) {
+  if (Array.isArray(c)) {
+    const r = c[0] ?? 0;
+    const g = c[1] ?? 0;
+    const b = c[2] ?? 0;
+    const a = c[3];
+    if (typeof a === "number") {
+      const alpha = a <= 1 ? a : a / 255;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+    return `rgb(${r},${g},${b})`;
+  }
+  if (typeof c === "string") return c;
+  if (c && typeof c === "object" && Array.isArray(c.levels)) {
+    return cssColor(c.levels);
+  }
+  return "rgba(0,0,0,0)";
 }
 
-// Soft spring-like oscillator (stable + elegant)
-function springy(time, freq, phase) {
-  const a = sin(TWO_PI * freq * time + phase);
-  const b = 0.35 * sin(TWO_PI * (freq * 2.0) * time + phase * 1.6);
+function clamp01(x) {
+  return max(0, min(1, x));
+}
 
-  // smooth turning points
-  const u = (a + 1) * 0.5;
-  const eased = u * u * (3 - 2 * u);
+function lerpRGB(a, b, t) {
+  return [
+    lerp(a[0], b[0], t),
+    lerp(a[1], b[1], t),
+    lerp(a[2], b[2], t),
+  ];
+}
 
-  return (eased * 2 - 1) + b;
+// 0..1..0 loop with a subtle springy wobble (clamped)
+function springPingPong01(time, periodSec, wobble = 0.06) {
+  const u = (time / periodSec) % 1;
+  const base = 0.5 - 0.5 * cos(TWO_PI * u); // 0..1..0
+  const w = wobble * sin(TWO_PI * u * 2) * (1 - abs(2 * base - 1));
+  return clamp01(base + w);
+}
+
+function easeOutBack(t, s = 1.15) {
+  const u = t - 1;
+  return 1 + (s + 1) * u * u * u + s * u * u;
+}
+
+function stepSpringV2(time, periodSec, moveFrac = 0.58, back = 1.12, useSpring = true) {
+  const step = floor(time / periodSec);
+  const t = (time / periodSec) % 1;
+
+  if (t >= moveFrac) {
+    return { step, p: 1, total: step + 1 };
+  }
+
+  const u = t / max(1e-6, moveFrac);
+  let p;
+  if (useSpring) {
+    p = easeOutBack(u, back);
+  } else {
+    p = u;
+  }
+  return { step, p, total: step + p };
+}
+
+function stepSpring(time, periodSec, moveFrac = 0.58, back = 1.12) {
+  const step = floor(time / periodSec);
+  const t = (time / periodSec) % 1;
+
+  if (t >= moveFrac) {
+    return { step, p: 1, total: step + 1 };
+  }
+
+  const u = t / max(1e-6, moveFrac);
+  const p = easeOutBack(u, back);
+  return { step, p, total: step + p };
 }
