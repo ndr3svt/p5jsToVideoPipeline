@@ -13,6 +13,25 @@ Notes
 
 let img;
 
+const DEBUG = false;
+
+const EXPORT_DEFAULTS = {
+  enabled: false,
+  fps: 60,
+  durationSec: 14,
+  codec: "hevc10", // "hevc10" | "h264"
+  preset: "slow",
+  crf: 16,
+  cleanup: false,
+};
+
+const EXPORT = {
+  ...EXPORT_DEFAULTS,
+  totalFrames: EXPORT_DEFAULTS.fps * EXPORT_DEFAULTS.durationSec,
+  frame: 0,
+  _afterDraw: null,
+};
+
 const P = {
   gray: [211, 204, 199],
   red: [254, 126, 114],
@@ -52,15 +71,82 @@ let stripeInnerColor = null;
 
 let isPaused = false;
 
+function getExportConfig() {
+  const p = new URLSearchParams(window.location.search);
+  const enabled = p.get("export") === "1";
+  const fps = max(1, floor(Number(p.get("fps") ?? EXPORT_DEFAULTS.fps)));
+  const durationSec = max(0, Number(p.get("duration") ?? EXPORT_DEFAULTS.durationSec));
+  const totalFrames = max(0, floor(Number(p.get("frames") ?? fps * durationSec)));
+  const w = max(1, floor(Number(p.get("w") ?? L.w)));
+  const h = max(1, floor(Number(p.get("h") ?? L.h)));
+  const codec = p.get("codec") ?? EXPORT_DEFAULTS.codec;
+  const preset = p.get("preset") ?? EXPORT_DEFAULTS.preset;
+  const crf = max(0, Number(p.get("crf") ?? EXPORT_DEFAULTS.crf));
+  const cleanup = p.get("cleanup") === "1" ? true : EXPORT_DEFAULTS.cleanup;
+  return { enabled, fps, durationSec, totalFrames, w, h, codec, preset, crf, cleanup };
+}
+
+async function exportAllFrames() {
+  for (let f = 0; f < EXPORT.totalFrames; f++) {
+    if (f % 60 === 0) console.log(`export frame ${f}/${EXPORT.totalFrames}`);
+    EXPORT.frame = f;
+    await new Promise(resolve => {
+      EXPORT._afterDraw = resolve;
+      redraw();
+    });
+
+    const canvas = document.querySelector("canvas");
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("canvas.toBlob() returned null");
+    const filename = `frame_${String(f).padStart(6, "0")}.png`;
+
+    const fd = new FormData();
+    fd.append("file", blob, filename);
+    fd.append("index", String(f));
+
+    const res = await fetch("/frame", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(`POST /frame ${f} failed: ${res.status} ${await res.text()}`);
+  }
+
+  const res = await fetch("/encode", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      fps: EXPORT.fps,
+      totalFrames: EXPORT.totalFrames,
+      codec: EXPORT.codec,
+      preset: EXPORT.preset,
+      crf: EXPORT.crf,
+      cleanup: EXPORT.cleanup,
+    }),
+  });
+  if (!res.ok) throw new Error(`POST /encode failed: ${res.status} ${await res.text()}`);
+  console.log(await res.text());
+}
+
 function preload() {
   // comment this out if you don't have the file
   img = loadImage("/text.png");
 }
 
 function setup() {
-  createCanvas(L.w, L.h);
+  const cfg = getExportConfig();
+  EXPORT.enabled = cfg.enabled;
+  EXPORT.fps = cfg.fps;
+  EXPORT.totalFrames = cfg.totalFrames;
+  EXPORT.codec = cfg.codec;
+  EXPORT.preset = cfg.preset;
+  EXPORT.crf = cfg.crf;
+  EXPORT.cleanup = cfg.cleanup;
+
+  createCanvas(cfg.w, cfg.h);
   pixelDensity(1);
-  frameRate(60);
+  frameRate(cfg.fps);
+
+  if (EXPORT.enabled) {
+    noLoop();
+    exportAllFrames().catch(err => console.error(err));
+  }
   // Panel x positions
   const leftGrayX = L.pad;
   const leftRedX = L.pad + L.grayW;
@@ -142,7 +228,7 @@ function setup() {
 }
 
 function keyPressed() {
-  if (key === "p" || key === "P") {
+  if (!EXPORT.enabled && (key === "p" || key === "P")) {
     isPaused = !isPaused;
     if (isPaused) noLoop();
     else loop();
@@ -152,11 +238,11 @@ function keyPressed() {
 let waitTime = 30;
 function draw() {
   background(...P.yellow);
-  timeSec = frameCount / 60;
+  timeSec = EXPORT.enabled ? EXPORT.frame / EXPORT.fps : frameCount / 60;
 
   // Shared timing
   const STEP_PERIOD_SEC = 3.5; // seconds per step
-
+  // const STEP_PERIOD_SEC = 3.5; // seconds per step
   // Background crossfade (slow, springy loop)
   const bgT = springPingPong01(timeSec, STEP_PERIOD_SEC * 4, 0.06); // 4 steps per full 0..1..0 loop
   stripeOuterColor = lerpRGB(P.red, P.gray, bgT);
@@ -183,8 +269,16 @@ function draw() {
   // Text overlay
   if (img) image(img, 742, 480);
 
-  textSize(24);
-  text("timeSec: " + timeSec.toFixed(2), 10, 20);
+  if (DEBUG && !EXPORT.enabled) {
+    textSize(24);
+    text("timeSec: " + timeSec.toFixed(2), 10, 20);
+  }
+
+  if (EXPORT.enabled && EXPORT._afterDraw) {
+    const done = EXPORT._afterDraw;
+    EXPORT._afterDraw = null;
+    done();
+  }
 }
 
 // ----------------------------
