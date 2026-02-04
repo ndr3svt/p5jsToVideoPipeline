@@ -241,8 +241,8 @@ function draw() {
   timeSec = EXPORT.enabled ? EXPORT.frame / EXPORT.fps : frameCount / 60;
 
   // Shared timing
-  const STEP_PERIOD_SEC = 3.5; // seconds per step
   // const STEP_PERIOD_SEC = 3.5; // seconds per step
+  const STEP_PERIOD_SEC = 1.75; // seconds per step
   // Background crossfade (slow, springy loop)
   const bgT = springPingPong01(timeSec, STEP_PERIOD_SEC * 4, 0.06); // 4 steps per full 0..1..0 loop
   stripeOuterColor = lerpRGB(P.red, P.gray, bgT);
