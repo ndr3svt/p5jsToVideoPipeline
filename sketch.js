@@ -161,7 +161,7 @@ function draw() {
   drawBigStripeGroup(rightBig, rightAngle, P.gray, P.red);
 
   // Center circles: gradients static, centers "gravitate" in/out on each step
-  
+
   drawCenterGroup(centerBig, step);
   
   // Text overlay
@@ -349,9 +349,11 @@ function gradEllipse({ x, y, rx, ry, cA, cB, angle = HALF_PI, invert = false }) 
   }
 
   ctx.fillStyle = g;
+  // ctx.globalAlpha = mouseX / width;
   ctx.fillRect(x - rx, y - ry, rx * 2, ry * 2);
 
   ctx.restore();
+  // ctx.globalAlpha = 1;
 }
 
 // ----------------------------
