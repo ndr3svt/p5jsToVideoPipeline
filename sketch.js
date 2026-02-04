@@ -31,8 +31,10 @@ const L = {
 // Center big circles: set start/end Y positions here (pixels).
 // Leave as `null` to use the computed defaults.
 const CENTER_POS = {
-  top: { y0: 350, y1: 280 },
-  bottom: { y0: 730, y1: 800 },
+  // top: { y0: 350, y1: 280 },
+  // bottom: { y0: 730, y1: 800 },
+   top: { y0: 280, y1: 540 },
+  bottom: { y0: 800, y1: 540 },
 };
 
 let timeSec = 0;
@@ -48,6 +50,8 @@ let ellipseYScale = 1;
 let stripeOuterColor = null;
 let stripeInnerColor = null;
 
+let isPaused = false;
+
 function preload() {
   // comment this out if you don't have the file
   img = loadImage("/text.png");
@@ -56,7 +60,7 @@ function preload() {
 function setup() {
   createCanvas(L.w, L.h);
   pixelDensity(1);
-
+  frameRate(60);
   // Panel x positions
   const leftGrayX = L.pad;
   const leftRedX = L.pad + L.grayW;
@@ -137,19 +141,31 @@ function setup() {
   ];
 }
 
+function keyPressed() {
+  if (key === "p" || key === "P") {
+    isPaused = !isPaused;
+    if (isPaused) noLoop();
+    else loop();
+  }
+}
+
+let waitTime = 30;
 function draw() {
   background(...P.yellow);
   timeSec = frameCount / 60;
 
+  // Shared timing
+  const STEP_PERIOD_SEC = 3.5; // seconds per step
+
   // Background crossfade (slow, springy loop)
-  const bgT = springPingPong01(timeSec, 14.0, 0.06);
+  const bgT = springPingPong01(timeSec, STEP_PERIOD_SEC * 4, 0.06); // 4 steps per full 0..1..0 loop
   stripeOuterColor = lerpRGB(P.red, P.gray, bgT);
   stripeInnerColor = lerpRGB(P.gray, P.red, bgT);
 
   drawBackground();
 
   // Step animation timing (shared "beat" for everything below)
-  const step = stepSpring(timeSec, 3.0, 0.58, 1.12);
+  const step = stepSpring(timeSec, STEP_PERIOD_SEC, 0.58, 0);
   const leftAngle = HALF_PI + HALF_PI * step.total;  // +90° per step (clockwise in screen coords)
   const rightAngle = HALF_PI - HALF_PI * step.total; // -90° per step (counter-clockwise)
 
@@ -166,6 +182,9 @@ function draw() {
   
   // Text overlay
   if (img) image(img, 742, 480);
+
+  textSize(24);
+  text("timeSec: " + timeSec.toFixed(2), 10, 20);
 }
 
 // ----------------------------
@@ -401,6 +420,24 @@ function springPingPong01(time, periodSec, wobble = 0.06) {
 function easeOutBack(t, s = 1.15) {
   const u = t - 1;
   return 1 + (s + 1) * u * u * u + s * u * u;
+}
+
+function stepSpringV2(time, periodSec, moveFrac = 0.58, back = 1.12, useSpring = true) {
+  const step = floor(time / periodSec);
+  const t = (time / periodSec) % 1;
+
+  if (t >= moveFrac) {
+    return { step, p: 1, total: step + 1 };
+  }
+
+  const u = t / max(1e-6, moveFrac);
+  let p;
+  if (useSpring) {
+    p = easeOutBack(u, back);
+  } else {
+    p = u;
+  }
+  return { step, p, total: step + p };
 }
 
 function stepSpring(time, periodSec, moveFrac = 0.58, back = 1.12) {
